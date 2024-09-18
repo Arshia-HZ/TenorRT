@@ -3,6 +3,10 @@ from cuda import cudart
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
+import time
+import json
+import os
+from pycocotools.coco import COCO
 
 from utils import common 
 
@@ -85,15 +89,25 @@ class BaseEngine(object):
         for shape, dtype in self.output_spec():
             outputs.append(np.zeros(shape, dtype))
 
+        # Record start time
+        start_time = time.time()
+
         # Process I/O and execute the network.
         common.memcpy_host_to_device(self.inputs[0]['allocation'], np.ascontiguousarray(img))
 
         self.context.execute_v2(self.allocations)
         for o in range(len(outputs)):
             common.memcpy_device_to_host(outputs[o], self.outputs[o]['allocation'])
+
+        # Record end time
+        end_time = time.time()
+        # Calculate and print inference time for this frame
+        inference_time = end_time - start_time
+        print(f"Inference time for current frame: {inference_time:.4f} seconds")
         return outputs
 
     def detect_video(self, video_path, conf=0.5, end2end=False):
+        print(video_path)
         cap = cv2.VideoCapture(video_path)
         fourcc = cv2.VideoWriter_fourcc(*'XVID')
         fps = int(round(cap.get(cv2.CAP_PROP_FPS)))
@@ -114,8 +128,24 @@ class BaseEngine(object):
                                 (0, 0, 255), 2)
             if end2end:
                 num, final_boxes, final_scores, final_cls_inds = data
+
                 final_boxes = np.reshape(final_boxes/ratio, (-1, 4))
-                dets = np.concatenate([np.array(final_boxes)[:int(num[0])], np.array(final_scores)[:int(num[0])], np.array(final_cls_inds)[:int(num[0])]], axis=-1)
+                # Check if final_scores and final_cls_inds are empty
+                if final_scores.size == 0 or final_cls_inds.size == 0:
+                    print("No detections found or output arrays are empty.")
+                    dets = final_boxes  # or set to an empty list/array if preferred
+                else:
+                    # Ensure final_scores and final_cls_inds have shape (num_detections, 1)
+                    final_scores = np.array(final_scores).reshape(-1, 1)  # Shape: (num_detections, 1)
+                    final_cls_inds = np.array(final_cls_inds).reshape(-1, 1)  # Shape: (num_detections, 1)
+
+                    # Ensure that the number of detections is consistent
+                    if len(final_boxes) != len(final_scores) or len(final_boxes) != len(final_cls_inds):
+                        print("Mismatch in detection counts!")
+                        dets = final_boxes  # or set to an empty list/array if preferred
+                    else:
+                        # Concatenate final_boxes, final_scores, and final_cls_inds along the last axis
+                        dets = np.concatenate([final_boxes, final_scores, final_cls_inds], axis=-1)                                   
             else:
                 predictions = np.reshape(data, (1, -1, int(5+self.n_classes)))[0]
                 dets = self.postprocess(predictions,ratio)
@@ -125,7 +155,7 @@ class BaseEngine(object):
                                                                 :4], dets[:, 4], dets[:, 5]
                 frame = vis(frame, final_boxes, final_scores, final_cls_inds,
                                 conf=conf, class_names=self.class_names)
-            cv2.imshow('frame', frame)
+            # cv2.imshow('frame', frame)
             out.write(frame)
             if cv2.waitKey(25) & 0xFF == ord('q'):
                 break
@@ -345,3 +375,84 @@ def vis(img, boxes, scores, cls_ids, conf=0.5, class_names=None):
         cv2.putText(img, text, (x0, y0 + txt_size[1]), font, 0.4, txt_color, thickness=1)
 
     return img
+
+def convert_to_coco_format(self,yolov8_to_coco_mapping, image_id, final_boxes, final_scores, final_cls_inds):
+	coco_results = []
+	for i in range(len(final_boxes)):
+		box = final_boxes[i]
+		score = final_scores[i]
+		coco_categories = [yolov8_to_coco_mapping.get(cat, -1) for cat in final_cls_inds]
+		category_id = coco_categories[i]
+		
+		# Convert from [xmin, ymin, xmax, ymax] to [x, y, width, height]
+		x_min, y_min, x_max, y_max = box
+		width, height = x_max - x_min, y_max - y_min
+		
+		coco_results.append({
+			"image_id": image_id,
+			"category_id": int(category_id),
+			"bbox": [x_min, y_min, width, height],
+			"score": float(score)
+		})
+	return coco_results
+
+def test(self):
+
+	val_images_dir = '/content/val2017'  # Path to validation images
+	predictions = []
+
+	# Load COCO validation annotations
+	annFile = '/content/annotations/instances_val2017.json'
+	cocoGt = COCO(annFile)
+
+	# Get a list of all image IDs in the validation set
+	val_img_ids = cocoGt.getImgIds()
+
+	# Get image info (to map filenames to image IDs)
+	img_infos = cocoGt.loadImgs(val_img_ids)
+	img_id_map = {img['file_name']: img['id'] for img in img_infos}
+
+	# Get all COCO category info
+	categories = cocoGt.loadCats(cocoGt.getCatIds())
+	coco_category_map = {cat['name']: cat['id'] for cat in categories}
+
+	yolov8_to_coco_mapping = {}
+	for yolo_id, class_name in enumerate(self.class_names):
+		coco_id = coco_category_map.get(class_name, -1)
+		yolov8_to_coco_mapping[yolo_id] = coco_id
+
+	print("YOLOv8 to COCO Mapping:", yolov8_to_coco_mapping)
+
+	print("COCO Category Map:", coco_category_map)
+	
+	# For each image, run your YOLOv8 inference and convert the output to COCO format
+	for image_file in os.listdir(val_images_dir):
+		image_path = os.path.join(val_images_dir, image_file)
+		
+		# Retrieve the correct image_id from COCO annotations
+		image_id = img_id_map[image_file]  # Use the correct image ID from the map
+		##
+		origin_img = cv2.imread(image_path)
+		# img, ratio = preproc(origin_img, self.imgsz, self.mean, self.std)
+		img, ratio, dwdh = letterbox(origin_img, self.imgsz)
+		data = self.infer(img)
+		num, final_boxes, final_scores, final_cls_inds  = data
+		# final_boxes, final_scores, final_cls_inds  = data
+		dwdh = np.asarray(dwdh * 2, dtype=np.float32)
+		final_boxes -= dwdh
+		final_boxes = np.reshape(final_boxes/ratio, (-1, 4))
+		final_scores = np.reshape(final_scores, (-1, 1))
+		final_cls_inds = np.reshape(final_cls_inds, (-1, 1))
+		dets = np.concatenate([np.array(final_boxes)[:int(num[0])], np.array(final_scores)[:int(num[0])], np.array(final_cls_inds)[:int(num[0])]], axis=-1)
+			
+		if dets is not None:
+			final_boxes, final_scores, final_cls_inds = dets[:, :4], dets[:, 4], dets[:, 5]
+		##
+
+		# Convert to COCO format
+		image_predictions = self.convert_to_coco_format(yolov8_to_coco_mapping, image_id, final_boxes, final_scores, final_cls_inds)
+		predictions.extend(image_predictions)
+
+	# Save the predictions to a JSON file
+	with open('your_predictions.json', 'w') as f:
+		json.dump(predictions, f)

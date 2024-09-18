@@ -17,6 +17,7 @@ if __name__ == '__main__':
     parser.add_argument("-i", "--image", help="image path")
     parser.add_argument("-o", "--output", help="image output path")
     parser.add_argument("-v", "--video",  help="video path or camera index ")
+    parser.add_argument("-t", "--test",  help="test...")
     parser.add_argument("--end2end", default=False, action="store_true",
                         help="use end2end engine")
 
@@ -27,9 +28,12 @@ if __name__ == '__main__':
     pred.get_fps()
     img_path = args.image
     video = args.video
+    test = args.test
     if img_path:
       origin_img = pred.inference(img_path, conf=0.1, end2end=args.end2end)
 
       cv2.imwrite("%s" %args.output , origin_img)
     if video:
       pred.detect_video(video, conf=0.1, end2end=args.end2end) # set 0 use a webcam
+    if test:
+      pred.test()
