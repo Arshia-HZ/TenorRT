@@ -17,7 +17,7 @@ if __name__ == '__main__':
     parser.add_argument("-i", "--image", help="image path")
     parser.add_argument("-o", "--output", help="image output path")
     parser.add_argument("-v", "--video",  help="video path or camera index ")
-    parser.add_argument("-t", "--test",  help="test...")
+    parser.add_argument("-t", "--test",  help="calculate mAP on COCO dataset")
     parser.add_argument("--end2end", default=False, action="store_true",
                         help="use end2end engine")
 
