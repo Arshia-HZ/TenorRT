@@ -187,6 +187,87 @@ class BaseEngine(object):
             origin_img = vis(origin_img, final_boxes, final_scores, final_cls_inds,
                              conf=conf, class_names=self.class_names)
         return origin_img
+    
+    def convert_to_coco_format(self,yolov8_to_coco_mapping, image_id, final_boxes, final_scores, final_cls_inds):
+        coco_results = []
+        for i in range(len(final_boxes)):
+            box = final_boxes[i]
+            score = final_scores[i]
+            coco_categories = [yolov8_to_coco_mapping.get(cat, -1) for cat in final_cls_inds]
+            category_id = coco_categories[i]
+            
+            # Convert from [xmin, ymin, xmax, ymax] to [x, y, width, height]
+            x_min, y_min, x_max, y_max = box
+            width, height = x_max - x_min, y_max - y_min
+            
+            coco_results.append({
+                "image_id": image_id,
+                "category_id": int(category_id),
+                "bbox": [x_min, y_min, width, height],
+                "score": float(score)
+            })
+        return coco_results
+
+    def test(self):
+
+        val_images_dir = '/content/val2017'  # Path to validation images
+        predictions = []
+
+        # Load COCO validation annotations
+        annFile = '/content/annotations/instances_val2017.json'
+        cocoGt = COCO(annFile)
+
+        # Get a list of all image IDs in the validation set
+        val_img_ids = cocoGt.getImgIds()
+
+        # Get image info (to map filenames to image IDs)
+        img_infos = cocoGt.loadImgs(val_img_ids)
+        img_id_map = {img['file_name']: img['id'] for img in img_infos}
+
+        # Get all COCO category info
+        categories = cocoGt.loadCats(cocoGt.getCatIds())
+        coco_category_map = {cat['name']: cat['id'] for cat in categories}
+
+        yolov8_to_coco_mapping = {}
+        for yolo_id, class_name in enumerate(self.class_names):
+            coco_id = coco_category_map.get(class_name, -1)
+            yolov8_to_coco_mapping[yolo_id] = coco_id
+
+        print("YOLOv8 to COCO Mapping:", yolov8_to_coco_mapping)
+
+        print("COCO Category Map:", coco_category_map)
+        
+        # For each image, run your YOLOv8 inference and convert the output to COCO format
+        for image_file in os.listdir(val_images_dir):
+            image_path = os.path.join(val_images_dir, image_file)
+            
+            # Retrieve the correct image_id from COCO annotations
+            image_id = img_id_map[image_file]  # Use the correct image ID from the map
+            ##
+            origin_img = cv2.imread(image_path)
+            # img, ratio = preproc(origin_img, self.imgsz, self.mean, self.std)
+            img, ratio, dwdh = letterbox(origin_img, self.imgsz)
+            data = self.infer(img)
+            num, final_boxes, final_scores, final_cls_inds  = data
+            # final_boxes, final_scores, final_cls_inds  = data
+            dwdh = np.asarray(dwdh * 2, dtype=np.float32)
+            final_boxes -= dwdh
+            final_boxes = np.reshape(final_boxes/ratio, (-1, 4))
+            final_scores = np.reshape(final_scores, (-1, 1))
+            final_cls_inds = np.reshape(final_cls_inds, (-1, 1))
+            dets = np.concatenate([np.array(final_boxes)[:int(num[0])], np.array(final_scores)[:int(num[0])], np.array(final_cls_inds)[:int(num[0])]], axis=-1)
+                
+            if dets is not None:
+                final_boxes, final_scores, final_cls_inds = dets[:, :4], dets[:, 4], dets[:, 5]
+            ##
+
+            # Convert to COCO format
+            image_predictions = self.convert_to_coco_format(yolov8_to_coco_mapping, image_id, final_boxes, final_scores, final_cls_inds)
+            predictions.extend(image_predictions)
+
+        # Save the predictions to a JSON file
+        with open('your_predictions.json', 'w') as f:
+            json.dump(predictions, f)
 
     @staticmethod
     def postprocess(predictions, ratio):
@@ -375,84 +456,3 @@ def vis(img, boxes, scores, cls_ids, conf=0.5, class_names=None):
         cv2.putText(img, text, (x0, y0 + txt_size[1]), font, 0.4, txt_color, thickness=1)
 
     return img
-
-def convert_to_coco_format(self,yolov8_to_coco_mapping, image_id, final_boxes, final_scores, final_cls_inds):
-	coco_results = []
-	for i in range(len(final_boxes)):
-		box = final_boxes[i]
-		score = final_scores[i]
-		coco_categories = [yolov8_to_coco_mapping.get(cat, -1) for cat in final_cls_inds]
-		category_id = coco_categories[i]
-		
-		# Convert from [xmin, ymin, xmax, ymax] to [x, y, width, height]
-		x_min, y_min, x_max, y_max = box
-		width, height = x_max - x_min, y_max - y_min
-		
-		coco_results.append({
-			"image_id": image_id,
-			"category_id": int(category_id),
-			"bbox": [x_min, y_min, width, height],
-			"score": float(score)
-		})
-	return coco_results
-
-def test(self):
-
-	val_images_dir = '/content/val2017'  # Path to validation images
-	predictions = []
-
-	# Load COCO validation annotations
-	annFile = '/content/annotations/instances_val2017.json'
-	cocoGt = COCO(annFile)
-
-	# Get a list of all image IDs in the validation set
-	val_img_ids = cocoGt.getImgIds()
-
-	# Get image info (to map filenames to image IDs)
-	img_infos = cocoGt.loadImgs(val_img_ids)
-	img_id_map = {img['file_name']: img['id'] for img in img_infos}
-
-	# Get all COCO category info
-	categories = cocoGt.loadCats(cocoGt.getCatIds())
-	coco_category_map = {cat['name']: cat['id'] for cat in categories}
-
-	yolov8_to_coco_mapping = {}
-	for yolo_id, class_name in enumerate(self.class_names):
-		coco_id = coco_category_map.get(class_name, -1)
-		yolov8_to_coco_mapping[yolo_id] = coco_id
-
-	print("YOLOv8 to COCO Mapping:", yolov8_to_coco_mapping)
-
-	print("COCO Category Map:", coco_category_map)
-	
-	# For each image, run your YOLOv8 inference and convert the output to COCO format
-	for image_file in os.listdir(val_images_dir):
-		image_path = os.path.join(val_images_dir, image_file)
-		
-		# Retrieve the correct image_id from COCO annotations
-		image_id = img_id_map[image_file]  # Use the correct image ID from the map
-		##
-		origin_img = cv2.imread(image_path)
-		# img, ratio = preproc(origin_img, self.imgsz, self.mean, self.std)
-		img, ratio, dwdh = letterbox(origin_img, self.imgsz)
-		data = self.infer(img)
-		num, final_boxes, final_scores, final_cls_inds  = data
-		# final_boxes, final_scores, final_cls_inds  = data
-		dwdh = np.asarray(dwdh * 2, dtype=np.float32)
-		final_boxes -= dwdh
-		final_boxes = np.reshape(final_boxes/ratio, (-1, 4))
-		final_scores = np.reshape(final_scores, (-1, 1))
-		final_cls_inds = np.reshape(final_cls_inds, (-1, 1))
-		dets = np.concatenate([np.array(final_boxes)[:int(num[0])], np.array(final_scores)[:int(num[0])], np.array(final_cls_inds)[:int(num[0])]], axis=-1)
-			
-		if dets is not None:
-			final_boxes, final_scores, final_cls_inds = dets[:, :4], dets[:, 4], dets[:, 5]
-		##
-
-		# Convert to COCO format
-		image_predictions = self.convert_to_coco_format(yolov8_to_coco_mapping, image_id, final_boxes, final_scores, final_cls_inds)
-		predictions.extend(image_predictions)
-
-	# Save the predictions to a JSON file
-	with open('your_predictions.json', 'w') as f:
-		json.dump(predictions, f)
