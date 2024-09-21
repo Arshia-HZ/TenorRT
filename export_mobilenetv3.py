@@ -189,7 +189,7 @@ class EngineBuilder:
 
 def main(args):
     builder = EngineBuilder(args.verbose, args.workspace)
-    builder.create_network(args.onnx, args.end2end, args.conf_thres, args.iou_thres, args.max_det, v8=args.v8, v10=args.v10)
+    builder.create_network(args.onnx)
     builder.create_engine(args.engine, args.precision, args.calib_input, args.calib_cache, args.calib_num_images,
                           args.calib_batch_size)
 
@@ -209,18 +209,7 @@ if __name__ == "__main__":
                         help="The maximum number of images to use for calibration, default: 5000")
     parser.add_argument("--calib_batch_size", default=8, type=int,
                         help="The batch size for the calibration process, default: 8")
-    parser.add_argument("--end2end", default=False, action="store_true",
-                        help="export the engine include nms plugin, default: False")
-    parser.add_argument("--conf_thres", default=0.4, type=float,
-                        help="The conf threshold for the nms, default: 0.4")
-    parser.add_argument("--iou_thres", default=0.5, type=float,
-                        help="The iou threshold for the nms, default: 0.5")
-    parser.add_argument("--max_det", default=100, type=int,
-                        help="The total num for results, default: 100")
-    parser.add_argument("--v8", default=False, action="store_true",
-                        help="use yolov8/9 model, default: False")
-    parser.add_argument("--v10", default=False, action="store_true",
-                        help="use yolov10 model, default: False")
+
     args = parser.parse_args()
     print(args)
     if not all([args.onnx, args.engine]):
