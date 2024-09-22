@@ -49,4 +49,6 @@ class DataLoaderBatcher:
             if self.max_batches and batch_idx >= self.max_batches:
                 break
             batch_data = batch_data.numpy().astype(self.dtype)  # Convert to numpy
+            # Increment batch index here
+            self.batch_index += 1
             yield batch_data, None, None  # Ignore labels and scales, not needed for calibration
