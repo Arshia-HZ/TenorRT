@@ -72,7 +72,7 @@ class EngineCalibrator(trt.IInt8EntropyCalibrator2):
         """
         try:
             batch, _, _ = next(self.batch_generator)
-            log.info("Calibrating image {} / {}".format(self.batcher.image_index, self.batcher.num_images))
+            log.info("Calibrating image {} / {}".format(self.batcher.batch_index, len(self.batcher.dataloader.dataset) // self.batcher.batch_size))
             common.memcpy_host_to_device(self.batch_allocation, np.ascontiguousarray(batch))
             return [int(self.batch_allocation)]
         except StopIteration:
