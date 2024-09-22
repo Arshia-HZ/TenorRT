@@ -2,66 +2,77 @@ import os
 import sys
 import logging
 import argparse
-
 import numpy as np
 import tensorrt as trt
 from cuda import cudart
-
+import torchvision.transforms as transforms
+import torchvision.datasets as datasets
+import torch
 from utils import common 
-from image_batch import ImageBatcher
+from DataLoaderBatcher_mobilenetv3 import DataLoaderBatcher
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("EngineBuilder").setLevel(logging.INFO)
 log = logging.getLogger("EngineBuilder")
 
 class EngineCalibrator(trt.IInt8EntropyCalibrator2):
-    """
-    Implements the INT8 Entropy Calibrator 2.
-    """
-
-    def __init__(self, cache_file):
+    def __init__(self, cache_file, batch_size=16, max_batches=100):
         """
-        :param cache_file: The location of the cache file.
+        Initializes the EngineCalibrator with an internal DataLoaderBatcher for CIFAR-10 test set.
+        :param cache_file: The file where calibration cache will be stored.
+        :param batch_size: The size of the batches used for calibration.
+        :param max_batches: Maximum number of batches to use for calibration.
         """
         super().__init__()
         self.cache_file = cache_file
-        self.image_batcher = None
         self.batch_allocation = None
         self.batch_generator = None
+        self.batch_size = batch_size
+        self.max_batches = max_batches
 
-    def set_image_batcher(self, image_batcher: ImageBatcher):
+        # Internal method to setup the CIFAR-10 DataLoader
+        if not os.path.exists(self.cache_file):
+            self._prepare_dataloader()
+
+
+    def _prepare_dataloader(self):
         """
-        Define the image batcher to use, if any. If using only the cache file, an image batcher doesn't need
-        to be defined.
-        :param image_batcher: The ImageBatcher object
+        Prepares the internal DataLoader for the CIFAR-10 test dataset and wraps it in a DataLoaderBatcher.
         """
-        self.image_batcher = image_batcher
-        size = int(np.dtype(self.image_batcher.dtype).itemsize * np.prod(self.image_batcher.shape))
+        transform = transforms.Compose([
+            transforms.Resize((224, 224)),  # Resize images to MobileNetV3 input shape
+            transforms.ToTensor(),
+        ])
+
+        test_dataset = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+        test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=self.batch_size, shuffle=False)
+
+        # Set up the DataLoaderBatcher using the test_loader
+        batch_shape = [self.batch_size, 3, 224, 224]  # [batch_size, channels, height, width]
+        self.batcher = DataLoaderBatcher(test_loader, shape=batch_shape, dtype=np.float32, max_batches=self.max_batches)
+
+        # Set the batch generator for calibration
+        self.batch_generator = self.batcher.get_batch()
+        size = int(np.dtype(np.float32).itemsize * np.prod(batch_shape))
         self.batch_allocation = common.cuda_call(cudart.cudaMalloc(size))
-        self.batch_generator = self.image_batcher.get_batch()
+
 
     def get_batch_size(self):
         """
         Overrides from trt.IInt8EntropyCalibrator2.
-        Get the batch size to use for calibration.
-        :return: Batch size.
+        :return: Batch size used during calibration.
         """
-        if self.image_batcher:
-            return self.image_batcher.batch_size
-        return 1
+        return self.batch_size
 
     def get_batch(self, names):
         """
-        Overrides from trt.IInt8EntropyCalibrator2.
-        Get the next batch to use for calibration, as a list of device memory pointers.
-        :param names: The names of the inputs, if useful to define the order of inputs.
-        :return: A list of int-casted memory pointers.
+        Fetches the next batch from the DataLoaderBatcher for calibration.
+        :param names: Tensor names (not used in this case).
+        :return: A list of device pointers (one per input tensor).
         """
-        if not self.image_batcher:
-            return None
         try:
             batch, _, _ = next(self.batch_generator)
-            log.info("Calibrating image {} / {}".format(self.image_batcher.image_index, self.image_batcher.num_images))
+            log.info("Calibrating image {} / {}".format(self.batcher.image_index, self.batcher.num_images))
             common.memcpy_host_to_device(self.batch_allocation, np.ascontiguousarray(batch))
             return [int(self.batch_allocation)]
         except StopIteration:
@@ -70,26 +81,21 @@ class EngineCalibrator(trt.IInt8EntropyCalibrator2):
 
     def read_calibration_cache(self):
         """
-        Overrides from trt.IInt8EntropyCalibrator2.
-        Read the calibration cache file stored on disk, if it exists.
-        :return: The contents of the cache file, if any.
+        Reads the calibration cache if it exists.
         """
-        if self.cache_file is not None and os.path.exists(self.cache_file):
+        if self.cache_file and os.path.exists(self.cache_file):
             with open(self.cache_file, "rb") as f:
                 log.info("Using calibration cache file: {}".format(self.cache_file))
                 return f.read()
 
     def write_calibration_cache(self, cache):
         """
-        Overrides from trt.IInt8EntropyCalibrator2.
-        Store the calibration cache to a file on disk.
-        :param cache: The contents of the calibration cache to store.
+        Writes the calibration cache to the file.
         """
-        if self.cache_file is None:
-            return
-        with open(self.cache_file, "wb") as f:
-            log.info("Writing calibration cache data to: {}".format(self.cache_file))
-            f.write(cache)
+        if self.cache_file:
+            with open(self.cache_file, "wb") as f:
+                log.info("Writing calibration cache data to: {}".format(self.cache_file))
+                f.write(cache)
 
 class EngineBuilder:
     """
@@ -177,11 +183,7 @@ class EngineBuilder:
                 self.config.set_flag(trt.BuilderFlag.INT8)
                 self.config.int8_calibrator = EngineCalibrator(calib_cache)
                 if not os.path.exists(calib_cache):
-                    calib_shape = [calib_batch_size] + list(inputs[0].shape[1:])
-                    calib_dtype = trt.nptype(inputs[0].dtype)
-                    self.config.int8_calibrator.set_image_batcher(
-                        ImageBatcher(calib_input, calib_shape, calib_dtype, max_num_images=calib_num_images,
-                                     exact_batches=True))
+                    print(f"Starting INT8 Calibration with CIFAR-10 test set.")
 
         with self.builder.build_serialized_network(self.network, self.config) as engine, open(engine_path, "wb") as f:
             print("Serializing engine to file: {:}".format(engine_path))
