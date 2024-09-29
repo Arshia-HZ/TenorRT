@@ -103,8 +103,8 @@ class BaseEngine(object):
         end_time = time.time()
         # Calculate and print inference time for this frame
         inference_time = end_time - start_time
-        print(f"Inference time for current frame: {inference_time:.4f} seconds")
-        return outputs
+        
+        return outputs, inference_time
 
     def detect_video(self, video_path, conf=0.5, end2end=False):
         print(video_path)
@@ -122,7 +122,8 @@ class BaseEngine(object):
                 break
             blob, ratio = preproc(frame, self.imgsz, self.mean, self.std)
             t1 = time.time()
-            data = self.infer(blob)
+            data, infertime = self.infer(blob)
+            print(f"Inference time for current frame: {infertime:.4f} seconds")
             fps = (fps + (1. / (time.time() - t1))) / 2
             frame = cv2.putText(frame, "FPS:%d " %fps, (0, 40), cv2.FONT_HERSHEY_SIMPLEX, 1,
                                 (0, 0, 255), 2)
@@ -167,7 +168,8 @@ class BaseEngine(object):
         origin_img = cv2.imread(img_path)
         # img, ratio = preproc(origin_img, self.imgsz, self.mean, self.std)
         img, ratio, dwdh = letterbox(origin_img, self.imgsz)
-        data = self.infer(img)
+        data, infertime = self.infer(img)
+        print(f"Inference time for current frame: {infertime:.4f} seconds")
         if end2end:
             num, final_boxes, final_scores, final_cls_inds  = data
             # final_boxes, final_scores, final_cls_inds  = data
@@ -209,7 +211,7 @@ class BaseEngine(object):
         return coco_results
 
     def test(self):
-
+        infertimes = []
         val_images_dir = '/content/val2017'  # Path to validation images
         predictions = []
 
@@ -247,7 +249,9 @@ class BaseEngine(object):
             origin_img = cv2.imread(image_path)
             # img, ratio = preproc(origin_img, self.imgsz, self.mean, self.std)
             img, ratio, dwdh = letterbox(origin_img, self.imgsz)
-            data = self.infer(img)
+            data, infertime = self.infer(img)
+            print(f"Inference time for current frame: {infertime:.4f} seconds")
+            infertimes.append(infertime)
             num, final_boxes, final_scores, final_cls_inds  = data
             # final_boxes, final_scores, final_cls_inds  = data
             dwdh = np.asarray(dwdh * 2, dtype=np.float32)
@@ -265,6 +269,9 @@ class BaseEngine(object):
             image_predictions = self.convert_to_coco_format(yolov8_to_coco_mapping, image_id, final_boxes, final_scores, final_cls_inds)
             predictions.extend(image_predictions)
 
+        average_time = sum(infertimes) / len(infertimes)
+        print(f"Inference time for current frame: {average_time:.4f} seconds")
+        
         # Save the predictions to a JSON file
         with open('your_predictions.json', 'w') as f:
             json.dump(predictions, f)
@@ -287,11 +294,11 @@ class BaseEngine(object):
         img = np.ones((1,3,self.imgsz[0], self.imgsz[1]))
         img = np.ascontiguousarray(img, dtype=np.float32)
         for _ in range(5):  # warmup
-            _ = self.infer(img)
+            _,_ = self.infer(img)
 
         t0 = time.perf_counter()
         for _ in range(100):  # calculate average time
-            _ = self.infer(img)
+            _,_ = self.infer(img)
         print(100/(time.perf_counter() - t0), 'FPS')
 
 
