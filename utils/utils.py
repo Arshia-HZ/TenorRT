@@ -270,7 +270,7 @@ class BaseEngine(object):
             predictions.extend(image_predictions)
 
         average_time = sum(infertimes) / len(infertimes)
-        print(f"Inference time for current frame: {average_time:.4f} seconds")
+        print(f"Avg Inference Time: {average_time:.4f} seconds")
         
         # Save the predictions to a JSON file
         with open('your_predictions.json', 'w') as f:
